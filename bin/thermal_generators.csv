@@ -1,0 +1,10 @@
+﻿Generator,power_cost_per_mwh,max_power_mw,min_power_mw,max_fast_reserve_mw,fast_reserve_cost_per_mw,max_slow_reserve_mw,slow_reserve_cost_per_mw,total_power_hours
+G01,80,400,50,150,25,200,10,4
+G02,90,400,50,150,24,200,11,4
+G03,110,400,50,150,23,200,12,4
+G04,120,400,50,150,22,200,13,4
+G05,111,300,50,100,19,200,14,4
+G06,91,200,30,100,10,200,15,4
+G07,93,200,30,100,10,200,16,4
+G08,95,200,30,100,10,200,17,4
+G09,97,200,30,100,10,200,17,4
