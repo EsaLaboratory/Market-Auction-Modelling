@@ -20,8 +20,8 @@ def main():
     demand = utils.get_demand_data()
 
     # Reserve demand data
-    fast_reserve_demand = [100 + d*0 for d in demand]
-    slow_reserve_demand = [100 + d*0 for d in demand]
+    fast_reserve_demand = [100 + d*0.05 for d in demand]
+    slow_reserve_demand = [100 + d*0.05 for d in demand]
 
 
     # Generators data--------------------------------------------------------------
@@ -156,7 +156,7 @@ def main():
     @m.Constraint(m.GENERATORS, m.T)
     def gen_ramp_up(m, g, t):
         if t == 1:
-            return m.generation[g,t] <= generators_dict[g]["max_power_mw"]
+            return pyo.Constraint.Skip 
         
         return m.generation[g,t] - m.generation[g,t-1] <= generators_dict[g]["max_power_mw"] * (1/generators_dict[g]["total_power_hours"])
 
@@ -164,7 +164,7 @@ def main():
     @m.Constraint(m.GENERATORS, m.T)
     def gen_ramp_down(m, g, t):
         if t == 1:
-            return m.generation[g,t] <= generators_dict[g]["max_power_mw"] * (1 + (1/generators_dict[g]["total_power_hours"]))
+            return pyo.Constraint.Skip 
         
         return m.generation[g,t-1] - m.generation[g,t] <= generators_dict[g]["max_power_mw"] * (1/generators_dict[g]["total_power_hours"])
 
@@ -368,6 +368,10 @@ def main():
     if __name__ == "__main__":
         plt.show()
 
+    # Calculate the total cost of the system
+    total_cost = m.obj()
+    print(f"Total cost: {total_cost:,f}")
+    return total_cost
     
 
 if __name__ == "__main__":

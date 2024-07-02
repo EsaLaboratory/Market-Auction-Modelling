@@ -25,7 +25,7 @@ def main():
 
     # Generators data--------------------------------------------------------------
     generators_dict = utils.get_generator_data()
-    minimum_noload_spinning_capacity_mw = 100 # As MW
+    minimum_noload_spinning_capacity_mw = 200 # As MW
 
     
     # Each generator has a forecasted reserve price, they use it to calculate their offered oppotunity cost
@@ -476,8 +476,8 @@ def main():
 
 
     # print(renewable_generation)
-    fast_reserve_demand = [100 + d*0 + r*0 for d,r in zip(demand, renewable_generation)]
-    slow_reserve_demand = [100 + d*0 + r*0 for d,r in zip(demand, renewable_generation)]
+    fast_reserve_demand = [100 + d*0.05 + r*0 for d,r in zip(demand, renewable_generation)]
+    slow_reserve_demand = [100 + d*0.05 + r*0 for d,r in zip(demand, renewable_generation)]
 
 
     # Generators data--------------------------------------------------------------
@@ -679,6 +679,10 @@ def main():
     if __name__ == "__main__":
         plt.show()
 
-    
+        # Calculate the total cost of the system
+    total_cost = m.obj() + m2.obj()
+    print(f"Total cost: {total_cost:,f}")
+    return total_cost
+
 if __name__ == "__main__":
     main()
