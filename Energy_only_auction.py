@@ -1,41 +1,137 @@
 import pyomo.environ as pyo
-from pyomo.opt import SolverFactory, TerminationCondition
+from pyomo.opt import TerminationCondition
 import pandas as pd
+import random
 import utils
-import os
 import matplotlib.pyplot as plt
+import math
 
+
+interval_length = 0.5 # half an hour
+interval_num = 48 # 48 periods of 30 minutes
 
 def main():
-    
-    print("---------Runing Co-optimised Auction-----------")
+
+    print("---------Runing Energy-only Auction-----------")
+
     solver = pyo.SolverFactory("gurobi")
 
     m = pyo.ConcreteModel()
     m.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
 
     # Trading intervals, 48 30 min intervals
-    m.T = pyo.RangeSet(48)
-    interval_length = 0.5 # half an hour
+    m.T = pyo.RangeSet(interval_num)
 
     # 30 minute Demand data
     demand = utils.get_demand_data()
 
-    # Reserve demand data
-    fast_reserve_demand = [100 + d*0.05 for d in demand]
-    slow_reserve_demand = [100 + d*0.05 for d in demand]
-
-
     # Generators data--------------------------------------------------------------
     generators_dict = utils.get_generator_data()
+    minimum_noload_spinning_capacity_mw = 500 # As MW
+
+    
+    # Each generator has a forecasted reserve price, they use it to calculate their offered oppotunity cost
+    # Forecasted price is the result from the cooptimised auction plus a random variance for each provider
+    forecast_prices_df = utils.get_auction_result_prices(auction_type="cooptimised")
+    
+    forecast_fast_reserve_price_list = [e[0] for e in forecast_prices_df[["FR"]].values]
+    forecast_slow_reserve_price_list = [e[0] for e in forecast_prices_df[["SR"]].values]
+
+    forecast_error = 0.2 # +-20% percent maximum error vs forecast 
+    bound_fast = abs(sum(forecast_fast_reserve_price_list) / len(forecast_fast_reserve_price_list)) * forecast_error
+    bound_slow = abs(sum(forecast_slow_reserve_price_list) / len(forecast_slow_reserve_price_list)) * forecast_error
+
+    rand_seed = 42
+
+    # Forecasted reserve prices
+    for g in generators_dict.keys():
+        rand_seed +=1 
+        random.seed(rand_seed)
+
+        # Is the expected reserve price above each generator's reserve cost? If yes, increase energy price to reflect future opportunity, if not, offer only electricity at the production cost
+        max_production_mw = generators_dict[g]["max_power_mw"]
+        power_production_cost = generators_dict[g]["power_cost_per_mwh"]
+        generators_dict[g]["intervals"] = {}
+
+        for t in m.T:
+            forecast_fast_reserve_price = forecast_fast_reserve_price_list[t-1] + (random.randint(-math.floor(bound_fast*10), math.ceil(bound_fast*10))/10)
+            forecast_slow_reserve_price = forecast_slow_reserve_price_list[t-1] + (random.randint(-math.floor(bound_slow*10), math.ceil(bound_slow*10))/10)
+            production_blocks = [max_production_mw,0,0]
+            production_blocks_offered_price = [power_production_cost, power_production_cost, power_production_cost]
+
+            # Decide which reserve is more profitable
+            fast_reserve_profit = forecast_fast_reserve_price - generators_dict[g]["fast_reserve_cost_per_mw"]
+            slow_reserve_profit = forecast_slow_reserve_price - generators_dict[g]["slow_reserve_cost_per_mw"]
+
+            # If fast reserve is more profitable, give preference to it via capacity.
+            if fast_reserve_profit >= slow_reserve_profit:
+                if slow_reserve_profit > 0:
+                    
+                    # Reduce energy in block 0 and increase energy in block 1
+                    production_blocks[1] = generators_dict[g]["max_slow_reserve_mw"]
+                    production_blocks[0] -= production_blocks[1]
+
+                    # Calculate cost of energy in block, should be equal to the opportunity cost of the reserve profit plus energy production cost
+                    production_blocks_offered_price[1] += slow_reserve_profit
+
+                if fast_reserve_profit > 0:
+                    
+                    # Reduce energy in block 0 and 1 and increase energy in block 2.
+                    # Reduction should be made first to block 1, then to block 0
+                    production_blocks[2] = generators_dict[g]["max_fast_reserve_mw"]
+
+                    if production_blocks[1] >= production_blocks[2]:
+                        production_blocks[1] -= production_blocks[2]
+                    
+                    else:
+                        production_blocks[1] = 0
+                        production_blocks[0] = max_production_mw - production_blocks[2]
+                
+                    # Calculate cost of energy in block, should be equal to the opportunity cost of the reserve profit plus energy production cost
+                    production_blocks_offered_price[2] += fast_reserve_profit
+
+            # If slow reserve is more profitable, give preference above fast reserve
+            else:
+                if fast_reserve_profit > 0:
+                    
+                    # Reduce energy in block 0 and increase energy in block 2
+                    production_blocks[2] = generators_dict[g]["max_fast_reserve_mw"]
+                    production_blocks[0] -= production_blocks[2]
+
+                    # Calculate cost of energy in block, should be equal to the opportunity cost of the reserve profit plus energy production cost
+                    production_blocks_offered_price[2] += fast_reserve_profit
+
+                if slow_reserve_profit > 0:
+                    
+                    # Reduce energy in block 0 and 2 and increase energy in block 1.
+                    # Reduction should be made first to block 2, then to block 0
+                    production_blocks[1] = generators_dict[g]["max_slow_reserve_mw"]
+
+                    if production_blocks[2] >= production_blocks[1]:
+                        production_blocks[2] -= production_blocks[1]
+                    
+                    else:
+                        production_blocks[2] = 0
+                        production_blocks[0] = max_production_mw - production_blocks[1]
+                
+                    # Calculate cost of energy in block, should be equal to the opportunity cost of the reserve profit plus energy production cost
+                    production_blocks_offered_price[1] += slow_reserve_profit
+
+            generators_dict[g]["intervals"][t] = {}
+            generators_dict[g]["intervals"][t]["forecast_fast_reserve_price"] = forecast_fast_reserve_price
+            generators_dict[g]["intervals"][t]["forecast_slow_reserve_price"] = forecast_slow_reserve_price
+            generators_dict[g]["intervals"][t]["production_blocks"] = production_blocks
+            generators_dict[g]["intervals"][t]["production_blocks_offered_price"] = production_blocks_offered_price
+
+    # print(generators_dict["G01"])
+    # print(generators_dict["G02"])
+    # print(generators_dict["G03"])
 
     m.GENERATORS = pyo.Set(initialize=generators_dict.keys())
 
     m.generation = pyo.Var(m.GENERATORS, m.T, domain=pyo.NonNegativeReals)
+    m.generation_in_blocks = pyo.Var(m.GENERATORS, m.T, [0,1,2], domain=pyo.NonNegativeReals)
     m.generation_is_dispatched = pyo.Var(m.GENERATORS, m.T, domain=pyo.Binary)
-    m.generation_fast_reserve = pyo.Var(m.GENERATORS, m.T, domain=pyo.NonNegativeReals)
-    m.generation_slow_reserve = pyo.Var(m.GENERATORS, m.T, domain=pyo.NonNegativeReals)
-
 
     # Wind generators data--------------------------------------------------------------
     wind_generation_var_cost = 0
@@ -70,22 +166,21 @@ def main():
 
     m.storage_charge_power = pyo.Var(m.STORAGE, m.T, domain=pyo.NonNegativeReals)
     m.storage_discharge_power = pyo.Var(m.STORAGE, m.T, domain=pyo.NonNegativeReals)
-    m.storage_fast_reserve_capacity = pyo.Var(m.STORAGE, m.T, domain=pyo.NonNegativeReals)
     m.storage_energy = pyo.Var(m.STORAGE, m.T, domain=pyo.NonNegativeReals)
     m.storage_is_discharging = pyo.Var(m.STORAGE, m.T, domain=pyo.Binary)
 
 
     # Objective function--------------------------------------------------------------
-    total_cost_generators = sum(generators_dict[k]["power_cost_per_mwh"] * m.generation[k,t] * interval_length for k in m.GENERATORS for t in m.T)
-    total_cost_wind_generators = sum(wind_generation_var_cost * m.wind_generation[k,t] * interval_length for k in m.WIND_GENERATORS for t in m.T)
-    total_cost_solar_generators = sum(solar_generation_var_cost * m.solar_generation[k,t] * interval_length for k in m.SOLAR_GENERATORS for t in m.T)
-    total_cost_storage_charge = -sum(storage_dict[k]["charge_price"] * m.storage_charge_power[k,t] * interval_length for k in m.STORAGE for t in m.T)
-    total_cost_storage_discharge = sum(storage_dict[k]["discharge_price"] * m.storage_discharge_power[k,t] * interval_length for k in m.STORAGE for t in m.T)
+    total_cost_generators = sum(generators_dict[g]["intervals"][t]["production_blocks_offered_price"][0] * m.generation_in_blocks[g,t,0] * interval_length for g in m.GENERATORS for t in m.T)
+    total_cost_generators += sum(generators_dict[g]["intervals"][t]["production_blocks_offered_price"][1] * m.generation_in_blocks[g,t,1] * interval_length for g in m.GENERATORS for t in m.T)
+    total_cost_generators += sum(generators_dict[g]["intervals"][t]["production_blocks_offered_price"][2] * m.generation_in_blocks[g,t,2] * interval_length for g in m.GENERATORS for t in m.T)
 
-    fast_reserve_cost_generators = sum(generators_dict[k]["fast_reserve_cost_per_mw"] * m.generation_fast_reserve[k,t] * interval_length for k in m.GENERATORS for t in m.T)
-    fast_reserve_cost_storage = sum(storage_dict[k]["fast_reserve_price"] * m.storage_fast_reserve_capacity[k,t] * interval_length for k in m.STORAGE for t in m.T)
-
-    slow_reserve_cost_generators = sum(generators_dict[k]["slow_reserve_cost_per_mw"] * m.generation_slow_reserve[k,t] * interval_length for k in m.GENERATORS for t in m.T)
+    total_cost_wind_generators = sum(wind_generation_var_cost * m.wind_generation[w,t] * interval_length for w in m.WIND_GENERATORS for t in m.T)
+    
+    total_cost_solar_generators = sum(solar_generation_var_cost * m.solar_generation[spv,t] * interval_length for spv in m.SOLAR_GENERATORS for t in m.T)
+    
+    total_cost_storage_charge = - sum(storage_dict[s]["charge_price"] * m.storage_charge_power[s,t] * interval_length for s in m.STORAGE for t in m.T)
+    total_cost_storage_discharge = sum(storage_dict[s]["discharge_price"] * m.storage_discharge_power[s,t] * interval_length for s in m.STORAGE for t in m.T)
 
 
     m.obj = pyo.Objective(
@@ -97,12 +192,6 @@ def main():
             + total_cost_storage_charge 
             + total_cost_storage_discharge
             
-            # Reserve cost
-            + fast_reserve_cost_generators
-            + fast_reserve_cost_storage
-
-            + slow_reserve_cost_generators
-
             , sense=pyo.minimize)
     # m.pprint()
 
@@ -121,25 +210,18 @@ def main():
         return generation == demand[t - 1]
     # m.power_balance.pprint()
 
-    # Fast reserve fulfilment balance
     @m.Constraint(m.T)
-    def fast_reserve_balance(m, t):
-        reserved_mw = 0
-        reserved_mw += sum(m.generation_fast_reserve[g_name, t] for g_name in m.GENERATORS)
-        reserved_mw += sum(m.storage_fast_reserve_capacity[s_name, t] for s_name in m.STORAGE)
+    def minimum_noload_spinning_capacity_constraint(m, t):
 
-        return reserved_mw >= fast_reserve_demand[t - 1]
-    # m.power_balance.pprint()
+        spinning_capacity = 0
+        for g in generators_dict.keys():
 
-    # Slow reserve fulfilment balance
-    @m.Constraint(m.T)
-    def slow_reserve_balance(m, t):
-        reserved_mw = 0
-        reserved_mw += sum(m.generation_slow_reserve[g_name, t] for g_name in m.GENERATORS)
+            spinning_capacity += (generators_dict[g]["max_power_mw"] * m.generation_is_dispatched[g,t]) - (m.generation[g, t] * m.generation_is_dispatched[g,t])
         
-        return reserved_mw >= slow_reserve_demand[t - 1]
-    # m.power_balance.pprint()
+        return spinning_capacity >= minimum_noload_spinning_capacity_mw
+    # m.minimum_noload_spinning_capacity_mw.pprint()
 
+    # raise
 
     # Generation constraints-----------------
     #
@@ -153,12 +235,31 @@ def main():
     def gen_min_power(m, g, t):
         return m.generation[g,t] >= generators_dict[g]["min_power_mw"] * m.generation_is_dispatched[g,t]
 
+    # total dispatched power is equal to the sum of the power in the blocks
+    @m.Constraint(m.GENERATORS, m.T)
+    def gen_total_dispatched_power(m, g, t):
+        return m.generation[g,t] == sum(m.generation_in_blocks[g,t,b] for b in [0,1,2])
+
+    # Individual power in each block should be less than the maximum power in that block
+    @m.Constraint(m.GENERATORS, m.T)
+    def gen_max_block_0_power(m, g, t):
+        return m.generation_in_blocks[g,t,0] <= generators_dict[g]["intervals"][t]["production_blocks"][0]
+
+    @m.Constraint(m.GENERATORS, m.T)
+    def gen_max_block_1_power(m, g, t):
+        return m.generation_in_blocks[g,t,1] <= generators_dict[g]["intervals"][t]["production_blocks"][1]
+
+    @m.Constraint(m.GENERATORS, m.T)
+    def gen_max_block_2_power(m, g, t):
+        return m.generation_in_blocks[g,t,2] <= generators_dict[g]["intervals"][t]["production_blocks"][2]
+
 
     # Ramp up constraint
     @m.Constraint(m.GENERATORS, m.T)
     def gen_ramp_up(m, g, t):
         if t == 1:
-            return pyo.Constraint.Skip 
+            # return m.generation[g,t] <= generators_dict[g]["max_power_mw"]
+            return pyo.Constraint.Skip
         
         return m.generation[g,t] - m.generation[g,t-1] <= generators_dict[g]["max_power_mw"] * (1/generators_dict[g]["total_power_hours"])
 
@@ -166,24 +267,10 @@ def main():
     @m.Constraint(m.GENERATORS, m.T)
     def gen_ramp_down(m, g, t):
         if t == 1:
-            return pyo.Constraint.Skip 
+            # return m.generation[g,t] <= generators_dict[g]["max_power_mw"] * (1 + (1/generators_dict[g]["total_power_hours"]))
+            return pyo.Constraint.Skip
         
         return m.generation[g,t-1] - m.generation[g,t] <= generators_dict[g]["max_power_mw"] * (1/generators_dict[g]["total_power_hours"])
-
-    # Maximum reserve restriction
-    @m.Constraint(m.GENERATORS, m.T)
-    def gen_max_fast_reserve(m, g, t):
-        return m.generation_fast_reserve[g,t] <= generators_dict[g]["max_fast_reserve_mw"]
-
-    @m.Constraint(m.GENERATORS, m.T)
-    def gen_max_slow_reserve(m, g, t):
-        return m.generation_fast_reserve[g,t] +  m.generation_slow_reserve[g,t] <= generators_dict[g]["max_slow_reserve_mw"]
-
-
-    # Maximum capacity restriction
-    @m.Constraint(m.GENERATORS, m.T)
-    def gen_max_capacity(m, g, t):
-        return m.generation[g,t] + m.generation_fast_reserve[g,t] + m.generation_slow_reserve[g,t] <= generators_dict[g]["max_power_mw"] * m.generation_is_dispatched[g,t]
 
 
     # Wind generation constraints-----------------
@@ -191,6 +278,7 @@ def main():
     # Maximum power output
     @m.Constraint(m.WIND_GENERATORS, m.T)
     def wind_gen_max_power(m, w, t):
+        # if the forecasted energy is zero, force the generation to be zero
         if wind_generation.loc[t][w] == 0:
             m.wind_generation[w,t] == 0
         else:
@@ -201,6 +289,7 @@ def main():
     # Maximum power output
     @m.Constraint(m.SOLAR_GENERATORS, m.T)
     def solar_gen_max_power(m, spv, t):
+        # if the forecasted energy is zero, force the generation to be zero
         if solar_generation.loc[t][spv] == 0:
             return m.solar_generation[spv,t] == 0
         else:
@@ -219,7 +308,7 @@ def main():
     def storage_max_discharge_power(m, s, t):
         return m.storage_discharge_power[s,t] <= storage_dict[s]["max_power_mw"] * m.storage_is_discharging[s,t]
 
-    # Energy storage for next time period considering efficiency
+    # Energy storage at the end of the period 
     @m.Constraint(m.STORAGE, m.T)
     def storage_keep_track_of_energy(m, s, t):
         
@@ -238,30 +327,11 @@ def main():
     @m.Constraint(m.STORAGE, m.T)
     def storage_min_energy_capacity(m, s, t):
         return m.storage_energy[s,t] >= storage_dict[s]["min_capacity_mwh"]
-
+        
     # Energy STORAGE for end of day
     @m.Constraint(m.STORAGE)
     def storage_keep_track_of_energy_end_of_day(m, s):
-        return m.storage_energy[s,48] == soc_end_of_day * storage_dict[s]["max_capacity_mwh"]
-        
-    # Storage reserve constraints-----------------
-    # Maximum upward power capacity
-    @m.Constraint(m.STORAGE, m.T)
-    def storage_max_reserve_available(m, s, t):
-        return m.storage_discharge_power[s,t] - m.storage_charge_power[s,t] + m.storage_fast_reserve_capacity[s,t] <= storage_dict[s]["max_power_mw"]
-
-    # Maximum next-interval energy storage
-    @m.Constraint(m.STORAGE, m.T)
-    def storage_min_energy_available(m, s, t):
-        if t == 1:
-            return pyo.Constraint.Skip 
-        eff = storage_dict[s]["efficiency"]
-        
-        return storage_dict[s]["min_capacity_mwh"] <= m.storage_energy[s,t-1] + ((eff * m.storage_charge_power[s,t]) - ((m.storage_discharge_power[s,t] + m.storage_fast_reserve_capacity[s,t])/eff))*interval_length
-
-    # check the whole model
-    # m.pprint()
-    # raise
+        return m.storage_energy[s,interval_num] == soc_end_of_day * storage_dict[s]["max_capacity_mwh"]
 
     # solve the optimization problem
     results = solver.solve(m, tee=True)
@@ -300,33 +370,10 @@ def main():
         print(results.solver.termination_message)
         print(results.solver.time)
         print("-------------------")
-        
-
-    # Marginal price
-    marginal_price_power = [m.dual[m.power_balance[t]]/interval_length for t in m.T]
-    marginal_price_power_df = pd.DataFrame(zip(m.T, marginal_price_power), columns=["Interval", "Power"])
-    marginal_price_power_df.set_index("Interval", inplace=True)
-
-    marginal_price_fast_reserve = [m.dual[m.fast_reserve_balance[t]]/interval_length for t in m.T]
-    marginal_price_fast_reserve_df = pd.DataFrame(zip(m.T, marginal_price_fast_reserve), columns=["Interval", "Marginal Price FR"])
-    marginal_price_fast_reserve_df.set_index("Interval", inplace=True)
-
-    marginal_price_power_df["FR"] = marginal_price_fast_reserve_df["Marginal Price FR"]
-
-    marginal_price_slow_reserve = [m.dual[m.slow_reserve_balance[t]]/interval_length for t in m.T]
-    marginal_price_slow_reserve_df = pd.DataFrame(zip(m.T, marginal_price_slow_reserve), columns=["Interval", "Marginal Price SR"])
-    marginal_price_slow_reserve_df.set_index("Interval", inplace=True)
-
-    marginal_price_power_df["SR"] = marginal_price_slow_reserve_df["Marginal Price SR"]
-
-    utils.write_temp_price_file(df=marginal_price_power_df, auction_type="cooptimised")
-    # print(marginal_price_power_df)
-    # m.storage_energy.pprint()
-    # m.storage_max_energy_capacity.pprint()
-    # # plot marginal price
 
 
-    # Assembly results in a dictionary
+    # Export generation results to a json file
+
     model_results_dict = {
         "main_results": {},
         "gen_units": {}
@@ -345,10 +392,6 @@ def main():
                 model_results_dict["gen_units"][g][t]["available_for_reserves"] = 0 
             else:
                 model_results_dict["gen_units"][g][t]["available_for_reserves"] = generators_dict[g]["max_power_mw"] - m.generation[g,t].value
-            
-            model_results_dict["gen_units"][g][t]["fast_reserve"] = m.generation_fast_reserve[g,t].value
-            model_results_dict["gen_units"][g][t]["slow_reserve"] = m.generation_slow_reserve[g,t].value
-
 
     for w in m.WIND_GENERATORS:
         model_results_dict["gen_units"][w] = {"g_type": "wind"}
@@ -371,19 +414,30 @@ def main():
             model_results_dict["gen_units"][s][t]["charge"] = m.storage_charge_power[s,t].value
             model_results_dict["gen_units"][s][t]["discharge"] = m.storage_discharge_power[s,t].value
             model_results_dict["gen_units"][s][t]["energy"] = m.storage_energy[s,t].value
-            model_results_dict["gen_units"][s][t]["fast_reserve"] = m.storage_fast_reserve_capacity[s,t].value
 
     # Power prices
     marginal_price_power = [m.dual[m.power_balance[t]]/interval_length for t in m.T]
     model_results_dict["main_results"]["marginal_price"] = {}
     for t in m.T:
         model_results_dict["main_results"]["marginal_price"][t] = {"power": marginal_price_power[t-1]}
-        model_results_dict["main_results"]["marginal_price"][t]["FR"] = marginal_price_fast_reserve[t-1]
-        model_results_dict["main_results"]["marginal_price"][t]["SR"] = marginal_price_slow_reserve[t-1]
     
     # System cost
     model_results_dict["main_results"]["system_cost"] = m.obj()
 
+    
+    # Reserve demand calculation, as a function of demand and renewable generation
+    renewable_generation = [0 for _ in m.T]
+
+    # Get dispatched renewable generation for variable reserve demand calculation
+    for k, v in model_results_dict["gen_units"].items():
+        g_type = v["g_type"]
+        if g_type == "wind" or g_type == "solar":
+            for t in m.T:
+                renewable_generation[t-1] += v[t]["generation"]
+    
+    # Reserves demand calculation
+    fast_reserve_demand = [100 + d*0.05 + r*0.01 for d,r in zip(demand, renewable_generation)]
+    slow_reserve_demand = [100 + d*0.05 + r*0 for d,r in zip(demand, renewable_generation)]
     
     model_results_dict["main_results"]["demand"] = {}
     for t in m.T:
@@ -392,15 +446,15 @@ def main():
 
     # Export results to a json file
     print("Exporting results to json file")
-    utils.export_dict_to_temp_json(dict_data=model_results_dict, file_name="cooptimised_auction_results")  
+    utils.export_dict_to_temp_json(dict_data=model_results_dict, file_name="energy_only_auction_results")  
+    
 
-
-
-
-
-
-
-
+    # Plotting results
+        
+    # # Marginal price
+    # marginal_price_power = [m.dual[m.power_balance[t]]/interval_length for t in m.T]
+    # marginal_price_power_df = pd.DataFrame(zip(m.T, marginal_price_power), columns=["Interval", "Power"])
+    # marginal_price_power_df.set_index("Interval", inplace=True)
 
 
     # # lineplot of generation versus time
@@ -414,45 +468,37 @@ def main():
     # wind_gen = pd.Series(m.wind_generation.get_values()).unstack(0)
     # solar_gen = pd.Series(m.solar_generation.get_values()).unstack(0)
 
+    # # df = pd.concat([gen, wind_gen, solar_gen], axis=1)
     # df = pd.concat([gen, wind_gen, solar_gen, -storage_charge_power, storage_discharge_power], axis=1)
-    # fig, axs = plt.subplots(2, 3)
-    # df.plot(kind='line', ax=axs[1,0])
-    # df.plot(kind='area', stacked=True, ax=axs[1,1])
+    # # fig, axs = plt.subplots(2, 2)
+    # # df.plot(kind='line', ax=axs[1,0])
+    # # df.plot(kind='area', stacked=True, ax=axs[1,1])
 
-    # storage_energy.plot(ax=axs[1,2], label='Storage Energy')
-    # storage_charge_power.plot(ax=axs[1,2], label='Charge Power')
-    # storage_discharge_power.plot(ax=axs[1,2], label='Discharge Power')
-
-
-    # marginal_price_power_df.plot(kind='line', ax=axs[0,0])
-    # # marginal_price_power_df.plot(kind='line', ax=axs[0,2])
+    # # storage_energy.plot(ax=axs[0,1], label='Storage Energy')
+    # # storage_charge_power.plot(ax=axs[0,1], label='Charge Power')
+    # # storage_discharge_power.plot(ax=axs[0,1], label='Discharge Power')
 
 
-    # # print("\n\n")
-    # storage_fast_reserve = pd.Series(m.storage_fast_reserve_capacity.get_values()).unstack(0)
-    # gen_fast_reserve = pd.Series(m.generation_fast_reserve.get_values()).unstack(0)
+    # # marginal_price_power_df.plot(kind='line', ax=axs[0,0])
 
-    # df = pd.concat([gen_fast_reserve, storage_fast_reserve], axis=1)
-    # df.plot(kind='area', stacked=True, ax=axs[0,1])
-
-    # # print("\n\n")
-    # gen_slow_reserve = pd.Series(m.generation_slow_reserve.get_values()).unstack(0)
-
-    # df = pd.concat([gen_slow_reserve], axis=1)
-    # df.plot(kind='area', stacked=True, ax=axs[0,2])
+    # # plt.show()
 
 
-    # if __name__ == "__main__":
-    #     plt.show()
+    # # # blocks and prices from G01
+    # # intervals = {}
+    # # for t in m.T:
+    # #     blocks = generators_dict["G01"]["intervals"][t]["production_blocks"]
+    # #     prices = generators_dict["G01"]["intervals"][t]["production_blocks_offered_price"]
+    # #     intervals[t] = prices
 
-    # # Calculate the total cost of the system
-    # total_cost = m.obj()
-    # print(f"Total cost: {total_cost:,f}")
+    # # # plot intervals
+    # # print(intervals)
+    # # plt.plot(data=intervals)
+    # # plt.show()
 
-    # print("\ncooptimised auction finished-------------------\n\n")
-    
-    # return total_cost
-    
+
+    print("\n---------Energy-only auction finished---------\n\n")
+
 
 if __name__ == "__main__":
     main()

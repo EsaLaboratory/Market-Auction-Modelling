@@ -1,19 +1,18 @@
 import Cooptimised_auction
+import Energy_only_auction
 import Simultaneous_auction
+import Sequential_auction
 
-print("---------Runing Co-optimised Auction-----------")
+Cooptimised_auction.main()
+Energy_only_auction.main()
+Simultaneous_auction.main()
+Sequential_auction.main()
 
-cop_cost = Cooptimised_auction.main()
 
-print("Cooptimised finished")
 
-sim_cost = Simultaneous_auction.main()
 
-print("Simultaneous finished")
+# Final result extraction and comparisson
+# print("\n\n\n--------------FINAL RESULTS-------------\n\n")
 
-print("\n\n\n--------------FINAL RESULTS-------------\n\n")
 
-print(f"Cooptimised cost: {cop_cost:,.0f}")
-print(f"Simultaneous cost: {sim_cost:,.0f}")
-print(f"Cost difference: {sim_cost - cop_cost:,.0f}")
-print(f"Cost difference percentage: {((sim_cost - cop_cost) / sim_cost) * 100:.2f}%\n")
+print("---------End-----------")
