@@ -34,6 +34,7 @@ def main():
 
     # Generators data--------------------------------------------------------------
     generators_dict = utils.get_generator_data()
+    generators_cost_dict = utils.get_linearised_conventional_generator_costs()
 
     m.GENERATORS = pyo.Set(initialize=generators_dict.keys())
     m.generation_fast_reserve = pyo.Var(m.GENERATORS, m.T, domain=pyo.NonNegativeReals)
@@ -69,8 +70,8 @@ def main():
         # If not, offer only fast reserve at true cost
         generators_dict[g]["intervals"] = {}
         max_slow_reserve = generators_dict[g]["max_slow_reserve_mw"]
-        fast_reserve_cost = generators_dict[g]["fast_reserve_cost_per_mw"]
-        slow_reserve_cost = generators_dict[g]["slow_reserve_cost_per_mw"]
+        fast_reserve_cost = generators_cost_dict[g][10]["cost_per_mwh"] * 0.02
+        slow_reserve_cost = generators_cost_dict[g][10]["cost_per_mwh"] * 0.018
 
         for t in m.T:
             cap_available_for_reserves_mw = energy_auction_results_dict["gen_units"][g][t]["available_for_reserves"]
@@ -157,7 +158,7 @@ def main():
     # Maximum capacity restriction
     @m.Constraint(m.GENERATORS, m.T)
     def gen_max_capacity(m, g, t):
-        return energy_auction_results_dict["gen_units"][g][t]["generation"] + m.generation_fast_reserve[g,t] <= generators_dict[g]["max_power_mw"] * energy_auction_results_dict["gen_units"][g][t]["is_dispatched"]
+        return m.generation_fast_reserve[g,t] <= generators_dict[g]["intervals"][t]["available_for_reserves"]
 
     # Storage constraints-----------------
     #
@@ -224,7 +225,7 @@ def main():
     m2.generation_slow_reserve = pyo.Var(m2.GENERATORS, m2.T, domain=pyo.NonNegativeReals)
 
     # Objective function--------------------------------------------------------------
-    slow_reserve_cost_generators = sum(generators_dict[k]["slow_reserve_cost_per_mw"] * m2.generation_slow_reserve[k,t] * interval_length for k in m2.GENERATORS for t in m2.T)
+    slow_reserve_cost_generators = sum(generators_cost_dict[k][10]["cost_per_mwh"] * 0.018 * m2.generation_slow_reserve[k,t] * interval_length for k in m2.GENERATORS for t in m2.T)
 
 
     m2.obj = pyo.Objective(
@@ -346,15 +347,37 @@ def main():
         # df = pd.concat([gen, wind_gen, solar_gen], axis=1)
         df = pd.concat([gen, wind_gen, solar_gen, -storage_charge_power, storage_discharge_power], axis=1)
         fig, axs = plt.subplots(2, 3)
+        fig.suptitle('Sequential Auction Results')
         df.plot(kind='line', ax=axs[1,0])
         df.plot(kind='area', stacked=True, ax=axs[1,1])
+
+        # Add title to graph and axis
+        axs[1,0].set_title('Generation')
+        axs[1,0].set_xlabel('Period')
+        axs[1,0].set_ylabel('Power [MW]')
+        # axs[1,0].legend(loc='center left', bbox_to_anchor=(0.5, 0.5))
+
+        axs[1,1].set_title('Generation')
+        axs[1,1].set_xlabel('Period')
+        axs[1,1].set_ylabel('Power [MW]')
+        # axs[1,1].legend(loc='center left', bbox_to_anchor=(0.5, 0.5))
 
         storage_energy.plot(ax=axs[1,2], label='Storage Energy')
         storage_charge_power.plot(ax=axs[1,2], label='Charge Power')
         storage_discharge_power.plot(ax=axs[1,2], label='Discharge Power')
 
+        axs[1,2].set_title('Storage')
+        axs[1,2].set_xlabel('Period')
+        axs[1,2].set_ylabel('Power [MW]')
+        # axs[1,2].legend(loc='center left', bbox_to_anchor=(0.5, 0.5))
+
 
         marginal_price_power_df.plot(kind='line', ax=axs[0,0])
+
+        axs[0,0].set_title('Marginal Price')
+        axs[0,0].set_xlabel('Period')
+        axs[0,0].set_ylabel('Price [$/MWh]')
+        # axs[0,0].legend(loc='center left', bbox_to_anchor=(0.5, 0.5))
 
         storage_fast_reserve = pd.Series(m.storage_fast_reserve_capacity.get_values()).unstack(0)
         gen_fast_reserve = pd.Series(m.generation_fast_reserve.get_values()).unstack(0)
@@ -362,10 +385,20 @@ def main():
         df = pd.concat([gen_fast_reserve, storage_fast_reserve], axis=1)
         df.plot(kind='area', stacked=True, ax=axs[0,1])
 
+        axs[0,1].set_title('Fast Reserve')
+        axs[0,1].set_xlabel('Period')
+        axs[0,1].set_ylabel('Power [MW]')
+        # axs[0,1].legend(loc='center left', bbox_to_anchor=(0.5, 0.5))
+
         gen_slow_reserve = pd.Series(m2.generation_slow_reserve.get_values()).unstack(0)
 
         df = pd.concat([gen_slow_reserve], axis=1)
         df.plot(kind='area', stacked=True, ax=axs[0,2])
+
+        axs[0,2].set_title('Slow Reserve')
+        axs[0,2].set_xlabel('Period')
+        axs[0,2].set_ylabel('Power [MW]')
+
 
         plt.show()
 

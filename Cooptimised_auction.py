@@ -6,6 +6,9 @@ import os
 import matplotlib.pyplot as plt
 
 
+interval_length = 0.5 # half an hour
+interval_num = 48 # 48 periods of 30 minutes
+
 def main():
     
     print("---------Runing Co-optimised Auction-----------")
@@ -15,23 +18,32 @@ def main():
     m.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
 
     # Trading intervals, 48 30 min intervals
-    m.T = pyo.RangeSet(48)
-    interval_length = 0.5 # half an hour
+    m.T = pyo.RangeSet(interval_num)
 
     # 30 minute Demand data
     demand = utils.get_demand_data()
 
+    solar_generation = utils.get_solar_generator_data()
+    wind_generation = utils.get_wind_generator_data()
+
+    max_renewable_generation = [w+s for w,s, in zip(wind_generation.sum(axis=1).to_list(), solar_generation.sum(axis=1).to_list())]
+    
     # Reserve demand data
-    fast_reserve_demand = [100 + d*0.05 for d in demand]
-    slow_reserve_demand = [100 + d*0.05 for d in demand]
+    fast_reserve_demand = [20 + d*0.05 + r*0.05 for d,r in zip(demand, max_renewable_generation)]
+    slow_reserve_demand = [150 + d*0.05 + r*0.05 for d,r in zip(demand, max_renewable_generation)]
 
 
     # Generators data--------------------------------------------------------------
     generators_dict = utils.get_generator_data()
+    generators_cost_dict = utils.get_linearised_conventional_generator_costs()
+    num_generation_segments = 10
 
     m.GENERATORS = pyo.Set(initialize=generators_dict.keys())
+    m.gen_segments = pyo.RangeSet(num_generation_segments)
 
     m.generation = pyo.Var(m.GENERATORS, m.T, domain=pyo.NonNegativeReals)
+    m.generation_segments = pyo.Var(m.GENERATORS, m.T, m.gen_segments, domain=pyo.NonNegativeReals)
+    
     m.generation_is_dispatched = pyo.Var(m.GENERATORS, m.T, domain=pyo.Binary)
     m.generation_fast_reserve = pyo.Var(m.GENERATORS, m.T, domain=pyo.NonNegativeReals)
     m.generation_slow_reserve = pyo.Var(m.GENERATORS, m.T, domain=pyo.NonNegativeReals)
@@ -76,26 +88,49 @@ def main():
 
 
     # Objective function--------------------------------------------------------------
-    total_cost_generators = sum(generators_dict[k]["power_cost_per_mwh"] * m.generation[k,t] * interval_length for k in m.GENERATORS for t in m.T)
-    total_cost_wind_generators = sum(wind_generation_var_cost * m.wind_generation[k,t] * interval_length for k in m.WIND_GENERATORS for t in m.T)
-    total_cost_solar_generators = sum(solar_generation_var_cost * m.solar_generation[k,t] * interval_length for k in m.SOLAR_GENERATORS for t in m.T)
-    total_cost_storage_charge = -sum(storage_dict[k]["charge_price"] * m.storage_charge_power[k,t] * interval_length for k in m.STORAGE for t in m.T)
-    total_cost_storage_discharge = sum(storage_dict[k]["discharge_price"] * m.storage_discharge_power[k,t] * interval_length for k in m.STORAGE for t in m.T)
+    startup_cost_generators = 0
+    shutdown_cost_generators = 0
+    energy_cost_generators = 0
 
-    fast_reserve_cost_generators = sum(generators_dict[k]["fast_reserve_cost_per_mw"] * m.generation_fast_reserve[k,t] * interval_length for k in m.GENERATORS for t in m.T)
+    for g in m.GENERATORS:
+        for t in m.T:
+            if t == 1:
+                # Startup cost
+                startup_cost_generators += generators_dict[g]["startup_cost"] * (1 - m.generation_is_dispatched[g,interval_num]) * m.generation_is_dispatched[g,t]
+                # Shutdown cost
+                shutdown_cost_generators += generators_dict[g]["shutdown_cost"] * m.generation_is_dispatched[g,interval_num] * (1 - m.generation_is_dispatched[g,t])
+            else:
+                # Startup cost
+                startup_cost_generators += generators_dict[g]["startup_cost"] * (1 - m.generation_is_dispatched[g,t-1]) * m.generation_is_dispatched[g,t]
+                # Shutdown cost
+                shutdown_cost_generators += generators_dict[g]["shutdown_cost"] * m.generation_is_dispatched[g,t-1] * (1 - m.generation_is_dispatched[g,t])
+    
+            energy_cost_generators += sum(generators_cost_dict[g][gs]["cost_per_mwh"] * m.generation_segments[g,t,gs] for gs in m.gen_segments) * interval_length  
+            energy_cost_generators += generators_cost_dict[g]["base_cost_per_hour"] * m.generation_is_dispatched[g,t] * interval_length
+    
+    energy_cost_wind_generators = sum(wind_generation_var_cost * m.wind_generation[k,t] * interval_length for k in m.WIND_GENERATORS for t in m.T)
+    energy_cost_solar_generators = sum(solar_generation_var_cost * m.solar_generation[k,t] * interval_length for k in m.SOLAR_GENERATORS for t in m.T)
+    energy_cost_storage_charge = -sum(storage_dict[k]["charge_price"] * m.storage_charge_power[k,t] * interval_length for k in m.STORAGE for t in m.T)
+    energy_cost_storage_discharge = sum(storage_dict[k]["discharge_price"] * m.storage_discharge_power[k,t] * interval_length for k in m.STORAGE for t in m.T)
+
+    fast_reserve_cost_generators = sum(generators_cost_dict[k][10]["cost_per_mwh"] * 0.02 * m.generation_fast_reserve[k,t] * interval_length for k in m.GENERATORS for t in m.T)
     fast_reserve_cost_storage = sum(storage_dict[k]["fast_reserve_price"] * m.storage_fast_reserve_capacity[k,t] * interval_length for k in m.STORAGE for t in m.T)
 
-    slow_reserve_cost_generators = sum(generators_dict[k]["slow_reserve_cost_per_mw"] * m.generation_slow_reserve[k,t] * interval_length for k in m.GENERATORS for t in m.T)
+    slow_reserve_cost_generators = sum(generators_cost_dict[k][10]["cost_per_mwh"] * 0.018 * m.generation_slow_reserve[k,t] * interval_length for k in m.GENERATORS for t in m.T)
 
 
     m.obj = pyo.Objective(
         expr = 
+            # Startup and shutdown costs
+            startup_cost_generators
+            + shutdown_cost_generators
+
             # Energy cost
-            total_cost_generators 
-            + total_cost_wind_generators 
-            + total_cost_solar_generators 
-            + total_cost_storage_charge 
-            + total_cost_storage_discharge
+            + energy_cost_generators 
+            + energy_cost_wind_generators 
+            + energy_cost_solar_generators 
+            + energy_cost_storage_charge 
+            + energy_cost_storage_discharge
             
             # Reserve cost
             + fast_reserve_cost_generators
@@ -153,6 +188,15 @@ def main():
     def gen_min_power(m, g, t):
         return m.generation[g,t] >= generators_dict[g]["min_power_mw"] * m.generation_is_dispatched[g,t]
 
+    # Generation total generation equal to sum of segments constraint
+    @m.Constraint(m.GENERATORS, m.T)
+    def gen_total_segments_power(m, g, t):        
+        return m.generation[g,t] == generators_dict[g]["min_power_mw"] * m.generation_is_dispatched[g,t] + sum(m.generation_segments[g,t,gs] for gs in m.gen_segments)
+
+    # Generation segments constrained to their limits
+    @m.Constraint(m.GENERATORS, m.T, m.gen_segments)
+    def gen_each_segment_power(m, g, t, gs):
+        return m.generation_segments[g,t,gs] <= generators_cost_dict[g][gs]["capacity_mw"] * m.generation_is_dispatched[g,t]
 
     # Ramp up constraint
     @m.Constraint(m.GENERATORS, m.T)
@@ -160,7 +204,7 @@ def main():
         if t == 1:
             return pyo.Constraint.Skip 
         
-        return m.generation[g,t] - m.generation[g,t-1] <= generators_dict[g]["max_power_mw"] * (1/generators_dict[g]["total_power_hours"])
+        return m.generation[g,t] - m.generation[g,t-1] <= generators_dict[g]["max_power_mw"] * interval_length * (1/generators_dict[g]["total_power_hours"])
 
     # Ramp down constraint
     @m.Constraint(m.GENERATORS, m.T)
@@ -168,7 +212,7 @@ def main():
         if t == 1:
             return pyo.Constraint.Skip 
         
-        return m.generation[g,t-1] - m.generation[g,t] <= generators_dict[g]["max_power_mw"] * (1/generators_dict[g]["total_power_hours"])
+        return m.generation[g,t-1] - m.generation[g,t] <= generators_dict[g]["max_power_mw"] * interval_length * (1/generators_dict[g]["total_power_hours"])
 
     # Maximum reserve restriction
     @m.Constraint(m.GENERATORS, m.T)
@@ -185,6 +229,13 @@ def main():
     def gen_max_capacity(m, g, t):
         return m.generation[g,t] + m.generation_fast_reserve[g,t] + m.generation_slow_reserve[g,t] <= generators_dict[g]["max_power_mw"] * m.generation_is_dispatched[g,t]
 
+    # INITIAL STATE OF GENERATORS
+    @m.Constraint(m.GENERATORS)
+    def gen_initial_state(m, g):
+        if g in ["U1", "U2"]:
+            return m.generation_is_dispatched[g,1] == 1
+        else:
+            return pyo.Constraint.Skip
 
     # Wind generation constraints-----------------
     #
@@ -192,7 +243,7 @@ def main():
     @m.Constraint(m.WIND_GENERATORS, m.T)
     def wind_gen_max_power(m, w, t):
         if wind_generation.loc[t][w] == 0:
-            m.wind_generation[w,t] == 0
+            return m.wind_generation[w,t] == 0
         else:
             return m.wind_generation[w,t] == wind_generation.loc[t][w] * m.wind_generation_percentage[w,t]
 
@@ -242,7 +293,7 @@ def main():
     # Energy STORAGE for end of day
     @m.Constraint(m.STORAGE)
     def storage_keep_track_of_energy_end_of_day(m, s):
-        return m.storage_energy[s,48] == soc_end_of_day * storage_dict[s]["max_capacity_mwh"]
+        return m.storage_energy[s,interval_num] == soc_end_of_day * storage_dict[s]["max_capacity_mwh"]
         
     # Storage reserve constraints-----------------
     # Maximum upward power capacity
@@ -254,7 +305,7 @@ def main():
     @m.Constraint(m.STORAGE, m.T)
     def storage_min_energy_available(m, s, t):
         if t == 1:
-            return pyo.Constraint.Skip 
+            return pyo.Constraint.Skip
         eff = storage_dict[s]["efficiency"]
         
         return storage_dict[s]["min_capacity_mwh"] <= m.storage_energy[s,t-1] + ((eff * m.storage_charge_power[s,t]) - ((m.storage_discharge_power[s,t] + m.storage_fast_reserve_capacity[s,t])/eff))*interval_length
@@ -397,61 +448,77 @@ def main():
 
 
 
+    # lineplot of generation versus time
+    if __name__ == "__main__":
+
+        # print("\n\n")
+        storage_energy = pd.Series(m.storage_energy.get_values()).unstack(0)
+        storage_charge_power = pd.Series(m.storage_charge_power.get_values()).unstack(0)
+        storage_discharge_power = pd.Series(m.storage_discharge_power.get_values()).unstack(0)
+
+        gen = pd.Series(m.generation.get_values()).unstack(0)
+        wind_gen = pd.Series(m.wind_generation.get_values()).unstack(0)
+        solar_gen = pd.Series(m.solar_generation.get_values()).unstack(0)
+
+        df = pd.concat([gen, wind_gen, solar_gen, -storage_charge_power, storage_discharge_power], axis=1)
+        fig, axs = plt.subplots(2, 3)
+        # subplots title
+        fig.suptitle('Co-optimised Auction Results')
+        df.plot(kind='line', ax=axs[1,0])
+        df.plot(kind='area', stacked=True, ax=axs[1,1])
+
+        # Add title to graph and axis
+        axs[1,0].set_title('Generation')
+        axs[1,0].set_xlabel('Period')
+        axs[1,0].set_ylabel('Power [MW]')
+        # axs[1,0].legend(loc='center left', bbox_to_anchor=(0.5, 0.5))
+
+        axs[1,1].set_title('Generation')
+        axs[1,1].set_xlabel('Period')
+        axs[1,1].set_ylabel('Power [MW]')
+        # axs[1,1].legend(loc='center left', bbox_to_anchor=(0.5, 0.5))
+
+        storage_energy.plot(ax=axs[1,2], label='Storage Energy')
+        storage_charge_power.plot(ax=axs[1,2], label='Charge Power')
+        storage_discharge_power.plot(ax=axs[1,2], label='Discharge Power')
+        axs[1,2].set_title('Storage')
+        axs[1,2].set_xlabel('Period')
+        axs[1,2].set_ylabel('Power [MW]')
+        # axs[1,2].legend(loc='center left', bbox_to_anchor=(0.5, 0.5))
 
 
 
+        marginal_price_power_df.plot(kind='line', ax=axs[0,0])
+        # marginal_price_power_df.plot(kind='line', ax=axs[0,2])
+
+        axs[0,0].set_title('Marginal Price')
+        axs[0,0].set_xlabel('Period')
+        axs[0,0].set_ylabel('Price [$/MWh]')
+        # axs[0,0].legend(loc='center left', bbox_to_anchor=(0.5, 0.5))
+
+        storage_fast_reserve = pd.Series(m.storage_fast_reserve_capacity.get_values()).unstack(0)
+        gen_fast_reserve = pd.Series(m.generation_fast_reserve.get_values()).unstack(0)
+
+        df = pd.concat([gen_fast_reserve, storage_fast_reserve], axis=1)
+        df.plot(kind='area', stacked=True, ax=axs[0,1])
+
+        axs[0,1].set_title('Fast Reserve')
+        axs[0,1].set_xlabel('Period')
+        axs[0,1].set_ylabel('Power [MW]')
+        # axs[0,1].legend(loc='center left', bbox_to_anchor=(0.5, 0.5))
+
+        gen_slow_reserve = pd.Series(m.generation_slow_reserve.get_values()).unstack(0)
+        df = pd.concat([gen_slow_reserve], axis=1)
+        df.plot(kind='area', stacked=True, ax=axs[0,2])
+        axs[0,2].set_title('Slow Reserve')
+        axs[0,2].set_xlabel('Period')
+        axs[0,2].set_ylabel('Power [MW]')
+            
+
+        plt.show()
 
 
-
-    # # lineplot of generation versus time
-
-    # # print("\n\n")
-    # storage_energy = pd.Series(m.storage_energy.get_values()).unstack(0)
-    # storage_charge_power = pd.Series(m.storage_charge_power.get_values()).unstack(0)
-    # storage_discharge_power = pd.Series(m.storage_discharge_power.get_values()).unstack(0)
-
-    # gen = pd.Series(m.generation.get_values()).unstack(0)
-    # wind_gen = pd.Series(m.wind_generation.get_values()).unstack(0)
-    # solar_gen = pd.Series(m.solar_generation.get_values()).unstack(0)
-
-    # df = pd.concat([gen, wind_gen, solar_gen, -storage_charge_power, storage_discharge_power], axis=1)
-    # fig, axs = plt.subplots(2, 3)
-    # df.plot(kind='line', ax=axs[1,0])
-    # df.plot(kind='area', stacked=True, ax=axs[1,1])
-
-    # storage_energy.plot(ax=axs[1,2], label='Storage Energy')
-    # storage_charge_power.plot(ax=axs[1,2], label='Charge Power')
-    # storage_discharge_power.plot(ax=axs[1,2], label='Discharge Power')
-
-
-    # marginal_price_power_df.plot(kind='line', ax=axs[0,0])
-    # # marginal_price_power_df.plot(kind='line', ax=axs[0,2])
-
-
-    # # print("\n\n")
-    # storage_fast_reserve = pd.Series(m.storage_fast_reserve_capacity.get_values()).unstack(0)
-    # gen_fast_reserve = pd.Series(m.generation_fast_reserve.get_values()).unstack(0)
-
-    # df = pd.concat([gen_fast_reserve, storage_fast_reserve], axis=1)
-    # df.plot(kind='area', stacked=True, ax=axs[0,1])
-
-    # # print("\n\n")
-    # gen_slow_reserve = pd.Series(m.generation_slow_reserve.get_values()).unstack(0)
-
-    # df = pd.concat([gen_slow_reserve], axis=1)
-    # df.plot(kind='area', stacked=True, ax=axs[0,2])
-
-
-    # if __name__ == "__main__":
-    #     plt.show()
-
-    # # Calculate the total cost of the system
-    # total_cost = m.obj()
-    # print(f"Total cost: {total_cost:,f}")
-
-    # print("\ncooptimised auction finished-------------------\n\n")
-    
-    # return total_cost
+    print("\n---------Cooptimised auction finished---------\n\n")
     
 
 if __name__ == "__main__":
