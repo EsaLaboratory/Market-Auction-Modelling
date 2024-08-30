@@ -1,0 +1,16 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: Market-Auction-Modelling
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Angel
+    family-names: Carballo Cremades
+    affiliation: University of Oxford
+repository-code: 'https://github.com/EsaLaboratory/Market-Auction-Modelling'
+commit: 76f95f40b3c4d1b59c6923487289568d0a844e98
+date-released: '2024-08-30'
