@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 interval_length = 0.5 # half an hour
 interval_num = 48 # 48 periods of 30 minutes
 
-def main():
+def main(params={}):
     
     print("---------Runing Co-optimised Auction-----------")
     solver = pyo.SolverFactory("gurobi")
@@ -88,6 +88,9 @@ def main():
 
 
     # Objective function--------------------------------------------------------------
+    reserve_price_increase = 1 + params["reserve_price_inc"] if "reserve_price_inc" in params.keys() else 1
+    storage_reserve_price_increase = 1 + params["storage_reserve_price_inc"] if "storage_reserve_price_inc" in params.keys() else 1
+
     startup_cost_generators = 0
     shutdown_cost_generators = 0
     energy_cost_generators = 0
@@ -113,10 +116,10 @@ def main():
     energy_cost_storage_charge = -sum(storage_dict[k]["charge_price"] * m.storage_charge_power[k,t] * interval_length for k in m.STORAGE for t in m.T)
     energy_cost_storage_discharge = sum(storage_dict[k]["discharge_price"] * m.storage_discharge_power[k,t] * interval_length for k in m.STORAGE for t in m.T)
 
-    fast_reserve_cost_generators = sum(generators_cost_dict[k][10]["cost_per_mwh"] * 0.02 * m.generation_fast_reserve[k,t] * interval_length for k in m.GENERATORS for t in m.T)
-    fast_reserve_cost_storage = sum(storage_dict[k]["fast_reserve_price"] * m.storage_fast_reserve_capacity[k,t] * interval_length for k in m.STORAGE for t in m.T)
+    fast_reserve_cost_generators = sum(generators_cost_dict[k][10]["cost_per_mwh"] * 0.02 * m.generation_fast_reserve[k,t] * interval_length for k in m.GENERATORS for t in m.T) * reserve_price_increase
+    fast_reserve_cost_storage = sum(storage_dict[k]["fast_reserve_price"] * m.storage_fast_reserve_capacity[k,t] * interval_length for k in m.STORAGE for t in m.T) * storage_reserve_price_increase
 
-    slow_reserve_cost_generators = sum(generators_cost_dict[k][10]["cost_per_mwh"] * 0.018 * m.generation_slow_reserve[k,t] * interval_length for k in m.GENERATORS for t in m.T)
+    slow_reserve_cost_generators = sum(generators_cost_dict[k][10]["cost_per_mwh"] * 0.018 * m.generation_slow_reserve[k,t] * interval_length for k in m.GENERATORS for t in m.T) * reserve_price_increase
 
 
     m.obj = pyo.Objective(
@@ -463,7 +466,7 @@ def main():
         df = pd.concat([gen, wind_gen, solar_gen, -storage_charge_power, storage_discharge_power], axis=1)
         fig, axs = plt.subplots(2, 3)
         # subplots title
-        fig.suptitle('Co-optimised Auction Results')
+        fig.suptitle(f'Co-optimised Auction Results - {reserve_price_increase}')
         df.plot(kind='line', ax=axs[1,0])
         df.plot(kind='area', stacked=True, ax=axs[1,1])
 
@@ -515,11 +518,32 @@ def main():
         axs[0,2].set_ylabel('Power [MW]')
             
 
-        plt.show()
+        
 
 
     print("\n---------Cooptimised auction finished---------\n\n")
     
+    if __name__ == "__main__":
+        return m.obj()
 
 if __name__ == "__main__":
-    main()
+    obj = []
+    obj.append(main({"reserve_price_inc": 0}))
+    # obj.append(main({"reserve_price_inc": 2}))
+    # obj.append(main({"reserve_price_inc": 4}))
+    # obj.append(main({"reserve_price_inc": 6}))
+    # obj.append(main({"reserve_price_inc": 8}))
+    # obj.append(main({"reserve_price_inc": 10}))
+    # obj.append(main({"reserve_price_inc": 12}))
+    
+    # obj.append(main({"storage_reserve_price_inc": -0.5}))
+    # obj.append(main({"storage_reserve_price_inc": 1}))
+    # obj.append(main({"storage_reserve_price_inc": 1.5}))
+    # obj.append(main({"storage_reserve_price_inc": 2}))
+    # obj.append(main({"storage_reserve_price_inc": 2.5}))
+    # obj.append(main({"storage_reserve_price_inc": 3}))
+    
+    plt.show()
+    
+    for o in obj:
+        print(f"Objective: {o:,.0f}")

@@ -10,7 +10,7 @@ import math
 interval_length = 0.5 # half an hour
 interval_num = 48 # 48 periods of 30 minutes
 
-def main():
+def main(params={}):
 
     print("---------Runing Energy-only Auction-----------")
 
@@ -38,6 +38,7 @@ def main():
     generators_dict = utils.get_generator_data()
     generators_cost_dict = utils.get_linearised_conventional_generator_costs()
 
+    reserve_price_increase = 1 + params["reserve_price_inc"] if "reserve_price_inc" in params.keys() else 1
     
     # Each generator has a forecasted reserve price, they use it to calculate their offered oppotunity cost
     # Forecasted price is the result from the cooptimised auction plus a random variance for each provider
@@ -60,8 +61,8 @@ def main():
         # Is the expected reserve price above each generator's reserve cost? If yes, increase energy price to reflect future opportunity, if not, offer only electricity at the production cost
         max_production_mw = generators_dict[g]["max_power_mw"]
         generators_dict[g]["intervals"] = {}
-        fast_reserve_cost = generators_cost_dict[g][10]["cost_per_mwh"] * 0.02
-        slow_reserve_cost = generators_cost_dict[g][10]["cost_per_mwh"] * 0.018
+        fast_reserve_cost = generators_cost_dict[g][10]["cost_per_mwh"] * 0.02 * reserve_price_increase
+        slow_reserve_cost = generators_cost_dict[g][10]["cost_per_mwh"] * 0.018 * reserve_price_increase 
 
         for t in m.T:
             forecast_fast_reserve_price = forecast_fast_reserve_price_list[t-1] + (random.randint(-math.floor(bound_fast*10), math.ceil(bound_fast*10))/10)
@@ -504,66 +505,63 @@ def main():
     print(f"system cost: {m.obj():,.0f}")
 
 
-    startup_cost_generators = 0
-    shutdown_cost_generators = 0
-    energy_cost_generators = 0
-    reserve_oport_cost = 0
+    # Uncomment this section to extract scheduling information
+    # startup_cost_generators = 0
+    # shutdown_cost_generators = 0
+    # energy_cost_generators = 0
+
+    # reserve_increase_dict = {}
     # for g in m.GENERATORS:
+    #     reserve_increase_dict[g] = 0
     #     for t in m.T:
-    #         if t == 1:
-    #             # Startup cost
-    #             startup_cost_generators += generators_dict[g]["startup_cost"] * (1 - m.generation_is_dispatched[g,interval_num].value) * m.generation_is_dispatched[g,t].value
-    #             # Shutdown cost
-    #             shutdown_cost_generators += generators_dict[g]["shutdown_cost"] * m.generation_is_dispatched[g,interval_num].value * (1 - m.generation_is_dispatched[g,t].value)
-    #         else:
-    #             # Startup cost
-    #             startup_cost_generators += generators_dict[g]["startup_cost"] * (1 - m.generation_is_dispatched[g,t-1].value) * m.generation_is_dispatched[g,t].value
-    #             # Shutdown cost
-    #             shutdown_cost_generators += generators_dict[g]["shutdown_cost"] * m.generation_is_dispatched[g,t-1].value * (1 - m.generation_is_dispatched[g,t].value)
- 
-    #         energy_cost_generators += sum(generators_cost_dict[g][gs]["cost_per_mwh"] * m.generation_segments[g,t,gs].value for gs in m.gen_segments) * interval_length
-    #         energy_cost_generators += generators_cost_dict[g]["base_cost_per_hour"] * m.generation_is_dispatched[g,t].value * interval_length
+    #         reserve_increase_dict[g] += generators_dict[g]["intervals"][t]["production_blocks_offered_price"][0] * m.generation_in_blocks[g,t,0].value * interval_length 
+    #         reserve_increase_dict[g] += generators_dict[g]["intervals"][t]["production_blocks_offered_price"][1] * m.generation_in_blocks[g,t,1].value * interval_length 
+    #         reserve_increase_dict[g] += generators_dict[g]["intervals"][t]["production_blocks_offered_price"][2] * m.generation_in_blocks[g,t,2].value * interval_length 
 
-    reserve_increase_dict = {}
-    for g in m.GENERATORS:
-        reserve_increase_dict[g] = 0
-        for t in m.T:
-            reserve_increase_dict[g] += generators_dict[g]["intervals"][t]["production_blocks_offered_price"][0] * m.generation_in_blocks[g,t,0].value * interval_length 
-            reserve_increase_dict[g] += generators_dict[g]["intervals"][t]["production_blocks_offered_price"][1] * m.generation_in_blocks[g,t,1].value * interval_length 
-            reserve_increase_dict[g] += generators_dict[g]["intervals"][t]["production_blocks_offered_price"][2] * m.generation_in_blocks[g,t,2].value * interval_length 
-
-    for g in reserve_increase_dict.keys():
-        print(f"{g}: {reserve_increase_dict[g]:,.2f}")
-
-    print(f"{sum(reserve_increase_dict.values()):,.2f}")
-
-    # energy_cost_wind_generators = sum(wind_generation_var_cost * m.wind_generation[w,t].value * interval_length for w in m.WIND_GENERATORS for t in m.T)
+    # for g in generators_dict.keys():
+    #     if g == "U1":
+    #         print(generators_dict[g])
     
-    # energy_cost_solar_generators = sum(solar_generation_var_cost * m.solar_generation[spv,t].value * interval_length for spv in m.SOLAR_GENERATORS for t in m.T)
+    # values = [(g,val["capacity_mw"], val["cost_per_mwh"]) for g, v in generators_cost_dict.items() for seg, val in v.items() if seg != "base_cost_per_hour"]
+
+    # # order list based in cost values
+    # values = sorted(values, key=lambda x: x[2])
+
+    # for a,b,c in values:
+    #     print(f"{a},{b},{c}")
     
-    # energy_cost_storage_charge = - sum(storage_dict[s]["charge_price"] * m.storage_charge_power[s,t].value * interval_length for s in m.STORAGE for t in m.T)
-    # energy_cost_storage_discharge = sum(storage_dict[s]["discharge_price"] * m.storage_discharge_power[s,t].value * interval_length for s in m.STORAGE for t in m.T)
+    # print("\n\n\n-------------------\n\n\n")
+    # # raise
 
-    # print(f"Gen costs = {startup_cost_generators + shutdown_cost_generators + energy_cost_generators:,.0f}")
-    print(f"Reserve inc = {reserve_oport_cost:,.0f}")
-    # print(f"Wind costs = {energy_cost_wind_generators:,.0f}")
-    # print(f"Solar costs = {energy_cost_solar_generators:,.0f}")
-    # print(f"Storage costs = {energy_cost_storage_charge + energy_cost_storage_discharge:,.0f}")
+    # # Create the supply curve
+    # capacities = [0] + [val[1] for val in values]
+
+    # # add all past elements for each element
+    # for i in range(1, len(capacities)):
+    #     capacities[i] += capacities[i-1]
+
+    # costs = [val[2] for val in values] + [values[-1][2]]
+
+    # interv = 4
     
+    # # gen_increments = {g:0 for g in generators_dict.keys()}    
+    # new_values = []
+    # for g, v in generators_cost_dict.items():
+    #     for seg, val in v.items():
+    #         if seg != "base_cost_per_hour":
+    #             # gen_increments[g] += val["capacity_mw"]
+
+    #             base_cap = generators_dict[g]["intervals"][interv]["production_blocks"][0]
+    #             inc_cost = max(generators_dict[g]["intervals"][interv]["production_blocks_offered_price"][1::])
+
+    #             new_values.append((g, val["capacity_mw"], val["cost_per_mwh"] + inc_cost))
 
 
-
-
-
-
-
-
-
-
-
-
-
+    # new_values = sorted(new_values, key=lambda x: x[2])
+    # for a,b,c in new_values:
+    #     print(f"{a},{b},{c}")
+    
 
 
 if __name__ == "__main__":
-    main()
+    main({"reserve_price_inc": 0})

@@ -9,7 +9,7 @@ import math
 interval_length = 0.5 # half an hour
 interval_num = 48 # 48 periods of 30 minutes
 
-def main():
+def main(params={}):
 
     print("---------Runing Sequential Reserves Auction-----------")
 
@@ -48,6 +48,9 @@ def main():
     m.storage_fast_reserve_capacity = pyo.Var(m.STORAGE, m.T, domain=pyo.NonNegativeReals)
 
 
+    reserve_price_increase = 1 + params["reserve_price_inc"] if "reserve_price_inc" in params.keys() else 1
+    storage_reserve_price_increase = 1 + params["storage_reserve_price_inc"] if "storage_reserve_price_inc" in params.keys() else 1
+
     # Calculate oportunity cost for each generator and storage
     # Each generator has a forecasted slow reserve price, they use it to calculate their offered oppotunity cost
     # Forecasted price is the result from the cooptimised auction plus a random variance for each provider
@@ -70,8 +73,8 @@ def main():
         # If not, offer only fast reserve at true cost
         generators_dict[g]["intervals"] = {}
         max_slow_reserve = generators_dict[g]["max_slow_reserve_mw"]
-        fast_reserve_cost = generators_cost_dict[g][10]["cost_per_mwh"] * 0.02
-        slow_reserve_cost = generators_cost_dict[g][10]["cost_per_mwh"] * 0.018
+        fast_reserve_cost = generators_cost_dict[g][10]["cost_per_mwh"] * 0.02 * reserve_price_increase
+        slow_reserve_cost = generators_cost_dict[g][10]["cost_per_mwh"] * 0.018 * reserve_price_increase
 
         for t in m.T:
             cap_available_for_reserves_mw = energy_auction_results_dict["gen_units"][g][t]["available_for_reserves"]
@@ -107,7 +110,7 @@ def main():
     fast_reserve_cost_generators = sum(generators_dict[g]["intervals"][t]["reserve_blocks_offered_price"][0] * m.generation_fast_res_in_blocks[g,t,0] * interval_length for g in m.GENERATORS for t in m.T)
     fast_reserve_cost_generators += sum(generators_dict[g]["intervals"][t]["reserve_blocks_offered_price"][1] * m.generation_fast_res_in_blocks[g,t,1] * interval_length for g in m.GENERATORS for t in m.T)
     
-    fast_reserve_cost_storage = sum(storage_dict[k]["fast_reserve_price"] * m.storage_fast_reserve_capacity[k,t] * interval_length for k in m.STORAGE for t in m.T)
+    fast_reserve_cost_storage = sum(storage_dict[k]["fast_reserve_price"] * m.storage_fast_reserve_capacity[k,t] * interval_length for k in m.STORAGE for t in m.T) * storage_reserve_price_increase
 
     m.obj = pyo.Objective(
         expr = 
@@ -225,7 +228,7 @@ def main():
     m2.generation_slow_reserve = pyo.Var(m2.GENERATORS, m2.T, domain=pyo.NonNegativeReals)
 
     # Objective function--------------------------------------------------------------
-    slow_reserve_cost_generators = sum(generators_cost_dict[k][10]["cost_per_mwh"] * 0.018 * m2.generation_slow_reserve[k,t] * interval_length for k in m2.GENERATORS for t in m2.T)
+    slow_reserve_cost_generators = sum(generators_cost_dict[k][10]["cost_per_mwh"] * 0.018 * m2.generation_slow_reserve[k,t] * interval_length for k in m2.GENERATORS for t in m2.T) * reserve_price_increase
 
 
     m2.obj = pyo.Objective(

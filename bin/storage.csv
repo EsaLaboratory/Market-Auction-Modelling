@@ -1,2 +1,2 @@
 ﻿Storage,charge_price,discharge_price,fast_reserve_price,max_capacity_mwh,min_capacity_mwh,max_power_mw,efficiency
-B01,20,23,3,800,50,200,0.95
+B01,20,23,4,800,50,200,0.95
